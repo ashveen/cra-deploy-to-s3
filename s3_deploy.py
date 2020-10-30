@@ -1,7 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 import boto3
 from botocore.exceptions import ClientError
+import botocore
 import sys
 import re
 import os
@@ -27,7 +28,7 @@ PROG_DESC = """Build a create-react-app production deployment and copy to S3.
 
 def usage(sMsg=None):
     """Print the usage information and exit"""
-    if sMsg is not None:
+    if sMsg != None:
         printStdError("error: " + sMsg + "\n")
     oParser = getArgParser()
     oParser.print_help()
@@ -47,10 +48,9 @@ def errorMsg(sMsg, bExit=True):
 
 
 def statusMsg(sMsg, bNewLine=False):
-    """Provide a status message"""
     if bNewLine:
         print("")
-    print(" *** %s ***" % sMsg)
+    print(" *** %s ***" % (sMsg))
 
 
 def awsError(e):
@@ -63,9 +63,8 @@ def prettyPrint(sVal):
     pprint.PrettyPrinter(indent=2).pprint(sVal)
 
 
-def md5Checksum(sPath):
-    """Get the MD5 value for a file"""
-    with open(sPath, 'rb') as fh:
+def md5Checksum(filePath):
+    with open(filePath, 'rb') as fh:
         m = hashlib.md5()
         while True:
             data = fh.read(8192)
@@ -77,10 +76,14 @@ def md5Checksum(sPath):
 
 def getArgParser():
     """Management of the command-line argument parser"""
-    oParser = argparse.ArgumentParser(description=PROG_DESC)
-    oParser.add_argument('sProduct', help='product (required)', metavar='PRODUCT')
-    oParser.add_argument('sDeployment', help='deployment (required)', metavar='DEPLOYMENT')
-    oParser.add_argument('sBuildDir', help='build directory (required)', metavar='DIRECTORY')
+    oParser = argparse.ArgumentParser(
+        description=PROG_DESC, formatter_class=argparse.RawTextHelpFormatter)
+    oParser.add_argument(
+        'sProduct', help='product (required)', metavar='PRODUCT')
+    oParser.add_argument(
+        'sDeployment', help='deployment (required)', metavar='DEPLOYMENT')
+    oParser.add_argument(
+        'sBuildDir', help='build directory (required)', metavar='DIRECTORY')
     oParser.add_argument('-d', '--dry-run', action='store_true', dest='bDryRun',
                          help='run without transferring to S3')
     oParser.add_argument('-f', '--force-transfer', action='store_true', dest='bForceTransfer',
@@ -89,6 +92,10 @@ def getArgParser():
                          help='create invalidation for CloudFront only')
     oParser.add_argument('-m', '--maintain-versions', action='store', dest='iVersions', type=int,
                          help='number of versions to maintain', metavar='VERSIONS')
+    oParser.add_argument('-s', '--sub-dir', action='store', dest='iSubDir', type=str,
+                         help='sub-directory', metavar='SUBDIRECTORY')
+    oParser.add_argument('-p', '--profile', action='store', dest='sS3Profile', type=str,
+                         help='S3 credentials profile (optional)', metavar='PROFILE')
     return oParser
 
 
@@ -106,12 +113,12 @@ def getCwdFiles():
     for sRoot, aDirs, aFiles in os.walk('.'):
         for sFile in aFiles:
             sPath = re.sub(r'^\./', '', sRoot + '/' + sFile)
-            aAllFiles.append(sPath)
+            if sFile != '.DS_Store':
+                aAllFiles.append(sPath)
     return aAllFiles
 
 
 class Deploy:
-
     def main(self):
         """Primary class method"""
         self.getCmdOptions()
@@ -125,7 +132,8 @@ class Deploy:
         """Validate the deployment target"""
 
         self.PRODUCTS = self.getConfigValue('general', 'products').split()
-        self.DEPLOYMENTS = self.getConfigValue('general', 'deployments').split()
+        self.DEPLOYMENTS = self.getConfigValue(
+            'general', 'deployments').split()
         self.S3_BUCKET = self.getConfigValue('general', 's3_bucket')
 
         if searchList(self.oCmdOptions.sProduct, self.PRODUCTS) is False:
@@ -139,16 +147,27 @@ class Deploy:
         self.CF_DIST_ID = self.getConfigValue('cloudfront-' + self.oCmdOptions.sProduct,
                                               self.oCmdOptions.sDeployment + '-dist-id')
 
-        # Connect to S3 with the configured credentials and validate
-        sId = self.getConfigValue('aws-credentials', 'access_id')
-        sKey = self.getConfigValue('aws-credentials', 'secret_key')
-        self.oBoto = boto3.client('s3', aws_access_key_id=sId, aws_secret_access_key=sKey)
+        # Load credentials from ~/.aws/credentials, otherwise use [aws-credentials] for the configuration file
+        if self.oCmdOptions.sS3Profile:
+            print('Loading AWS profile: %s' % self.oCmdOptions.sS3Profile)
+
+            session = boto3.Session(profile_name=self.oCmdOptions.sS3Profile)
+            # Any clients created from this session will use credentials
+            # from the [profile_name] section of ~/.aws/credentials.
+            self.oBoto = session.client('s3')
+        else:
+            # Connect to S3 with the configured credentials and validate
+            sId = self.getConfigValue('aws-credentials', 'access_id')
+            sKey = self.getConfigValue('aws-credentials', 'secret_key')
+            self.oBoto = boto3.client(
+                's3', aws_access_key_id=sId, aws_secret_access_key=sKey)
+
         try:
             statusMsg("Validating AWS credentials")
             self.oBoto.list_objects_v2(Bucket=self.S3_BUCKET, MaxKeys=1)
         except ClientError as e:
             awsError(e)
-        self.oBotoCF = boto3.client('cloudfront', aws_access_key_id=sId, aws_secret_access_key=sKey)
+        self.oBotoCF = session.client('cloudfront')
 
     def goToBuildDir(self):
         """Go to the build directory and validate files"""
@@ -159,11 +178,11 @@ class Deploy:
         for sFile in NO_CACHE_FILES:
             if not os.path.isfile(sFile):
                 errorMsg("Build directory is missing files: " + self.oCmdOptions.sBuildDir)
-
+                         
     def getCmdOptions(self):
         """Get all command line args as an object, stored in a static variable"""
 
-        # Return the attribute if set, otherwise set 
+        # Return the attribute if set, otherwise set
         oParser = getArgParser()
         self.oCmdOptions = oParser.parse_args()
 
@@ -174,7 +193,8 @@ class Deploy:
             if self.oConfig.has_option(sSection, sKey):
                 sValue = self.oConfig[sSection][sKey]
             elif bRequired:
-                errorMsg("Missing configuration option: %s:%s" % (sSection, sKey))
+                errorMsg("Missing configuration option: %s:%s" %
+                         (sSection, sKey))
         elif bRequired:
             errorMsg("Missing configuration section: " + sSection)
         return sValue
@@ -193,17 +213,18 @@ class Deploy:
             return {}
 
         # Sort by last modified, newest on top
-        def get_last_modified(obj):
-            int(obj['LastModified'].strftime('%s'))
-        aContents = [obj for obj in sorted(aContents, key=get_last_modified, reverse=True)]
+        def get_last_modified(obj): return int(
+            obj['LastModified'].strftime('%s'))
+        aContents = [obj for obj in sorted(
+            aContents, key=get_last_modified, reverse=True)]
 
         aFiles = {}
         for oContent in aContents:
             sKey = oContent['Key'].replace(sPrefix + '/', '')
             aFiles[sKey] = {
-                'key': sKey,
-                'etag': re.sub(r'^"(.*)"$', '\\1', oContent['ETag']),
-                'size': oContent['Size'],
+                'key':      sKey,
+                'etag':     re.sub(r'^"(.*)"$', '\\1', oContent['ETag']),
+                'size':     oContent['Size'],
                 'modified': oContent['LastModified']
             }
         return aFiles
@@ -240,11 +261,12 @@ class Deploy:
         """Transfer files to S3"""
 
         # Caching states
-        sCacheAlways = 'max-age=%d, public' % CACHE_SECONDS
+        sCacheAlways = 'max-age=%d, public' % (CACHE_SECONDS)
         sCacheNever = 'max-age=0, no-cache, must-revalidate, proxy-revalidate, no-store'
 
         # Mapping file type - all others should be defined
         mimetypes.add_type('application/octet-stream', '.map')
+        mimetypes.add_type('text/plain', '.LICENSE')
 
         for sFile in aFiles:
             sKey = '%s/%s' % (sPrefix, sFile)
@@ -293,12 +315,18 @@ class Deploy:
         # prettyPrint(aBuildFiles)
 
         # Get all files and sizes from S3
-        sPrefix = 'deployments/%s/%s' % (self.oCmdOptions.sProduct, self.oCmdOptions.sDeployment)
+        sPrefix = 'deployments/%s/%s' % (self.oCmdOptions.sProduct,
+                                         self.oCmdOptions.sDeployment)
+        if self.oCmdOptions.iSubDir:
+            print('Using sub-directory: %s' % self.oCmdOptions.iSubDir)
+            sPrefix = 'deployments/%s/%s/%s' % (
+                self.oCmdOptions.sProduct, self.oCmdOptions.sDeployment, self.oCmdOptions.iSubDir)
         aS3FileInfo = self.getS3Files(self.S3_BUCKET, sPrefix)
         # prettyPrint(aS3FileInfo)
 
         # Get the list of new build files and old S3 files
-        aNewBuildFiles, aOldS3Files = self.compareFiles(aBuildFiles, aS3FileInfo)
+        aNewBuildFiles, aOldS3Files = self.compareFiles(
+            aBuildFiles, aS3FileInfo)
         # prettyPrint(aNewBuildFiles)
         # prettyPrint(aOldS3Files)
 

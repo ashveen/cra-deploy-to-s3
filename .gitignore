@@ -1,3 +1,4 @@
 s3_deploy.cfg
 .idea
 cra-deploy-to-s3.iml
+.DS_Store

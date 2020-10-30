@@ -64,7 +64,15 @@ older `precache-manifest` files to determine which files are needed)
 
 First you'll need to build your react application.  To transfer all the files to S3:
 ```
-./s3_deploy.py APPLICATION PROGRAM
+
+./s3_deploy.py APPLICATION PROGRAM ASSETS_DIRECTORY
+
+With deployment to a sub-directory on S3:
+./s3_deploy.py APPLICATION PROGRAM ASSETS_DIRECTORY --sub-dir SUBDIRECTORY
+
+With a specified AWS credentials profile from your local setup.
+This overrides the access key configuration from the .cfg file.
+./s3_deploy.py APPLICATION PROGRAM DIRECTORY -p AWSPROFILE
 ```
 
 ## Basic Concepts
