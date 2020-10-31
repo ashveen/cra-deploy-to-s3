@@ -13,7 +13,7 @@ import hashlib
 import datetime
 import mimetypes
 
-LOCAL_DIR = os.path.dirname(os.path.realpath(__file__))
+LOCAL_DIR = os.getcwd()
 BASE_DIR = os.path.dirname(LOCAL_DIR)
 PACKAGE_DIR = BASE_DIR + "/packages"
 CONFIG_FILE = "s3_deploy.cfg"
